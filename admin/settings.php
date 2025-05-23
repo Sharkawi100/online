@@ -190,22 +190,23 @@ $csrfToken = generateCSRF();
         
         /* Color picker styling */
         input[type="color"] {
-            -webkit-appearance: none;
-            border: none;
-            width: 50px;
-            height: 50px;
-            cursor: pointer;
-            border-radius: 8px;
-        }
+        appearance: none;              /* ADD THIS LINE */
+        -webkit-appearance: none;      /* This line already exists */
+        border: none;
+        width: 50px;
+        height: 50px;
+        cursor: pointer;
+        border-radius: 8px;
+    }
         
-        input[type="color"]::-webkit-color-swatch-wrapper {
-            padding: 0;
-        }
-        
-        input[type="color"]::-webkit-color-swatch {
-            border: none;
-            border-radius: 8px;
-        }
+input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 8px;
+}
     </style>
 </head>
 <body class="bg-gray-50">
