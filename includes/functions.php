@@ -369,3 +369,36 @@ function createAlert($message, $type = 'info')
         </div>
     ';
 }
+/**
+ * Update or insert a setting
+ * @param string $key Setting key
+ * @param mixed $value Setting value
+ * @param string $type Setting type
+ * @return bool Success
+ */
+function updateSetting($key, $value, $type = 'string')
+{
+    global $pdo;
+
+    // Convert value based on type
+    if ($type === 'boolean') {
+        $value = $value ? 'true' : 'false';
+    } elseif ($type === 'json') {
+        $value = json_encode($value);
+    } else {
+        $value = (string) $value;
+    }
+
+    // Check if setting exists
+    $stmt = $pdo->prepare("SELECT id FROM settings WHERE setting_key = ?");
+    $stmt->execute([$key]);
+    $exists = $stmt->fetch();
+
+    if ($exists) {
+        $stmt = $pdo->prepare("UPDATE settings SET setting_value = ?, setting_type = ? WHERE setting_key = ?");
+        return $stmt->execute([$value, $type, $key]);
+    } else {
+        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value, setting_type) VALUES (?, ?, ?)");
+        return $stmt->execute([$key, $value, $type]);
+    }
+}

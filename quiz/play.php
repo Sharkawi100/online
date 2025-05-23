@@ -9,11 +9,13 @@ if (!isset($_SESSION['quiz_participant']) || !isset($_SESSION['attempt_id'])) {
 
 $quizId = $_GET['id'] ?? $_SESSION['quiz_participant']['quiz_id'] ?? 0;
 
-// Get quiz details
+// Get quiz details with text if exists
 $stmt = $pdo->prepare("
-    SELECT q.*, s.name_ar as subject_name, s.icon as subject_icon 
+    SELECT q.*, s.name_ar as subject_name, s.icon as subject_icon,
+           qt.text_title, qt.text_content, qt.reading_time
     FROM quizzes q
     LEFT JOIN subjects s ON q.subject_id = s.id
+    LEFT JOIN quiz_texts qt ON q.text_id = qt.id
     WHERE q.id = ? AND q.is_active = 1
 ");
 $stmt->execute([$quizId]);
