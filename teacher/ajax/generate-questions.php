@@ -6,11 +6,6 @@ require_once '../../config/database.php';
 require_once '../../includes/functions.php';
 require_once '../../includes/ai_functions.php';
 
-// Define BASE_URL if not defined
-if (!defined('BASE_URL')) {
-    define('BASE_URL', '/online');
-}
-
 // Set JSON header
 header('Content-Type: application/json; charset=utf-8');
 

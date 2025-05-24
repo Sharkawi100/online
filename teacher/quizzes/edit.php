@@ -7,6 +7,10 @@ require_once '../../includes/functions.php';
 if (!isLoggedIn() || (!hasRole('teacher') && !hasRole('admin'))) {
     redirect('/auth/login.php');
 }
+// Define BASE_URL if not defined
+if (!defined('BASE_URL')) {
+    define('BASE_URL', '/online');
+}
 $quiz_id = $_GET['id'] ?? 0;
 $error = '';
 $success = '';

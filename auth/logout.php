@@ -2,6 +2,11 @@
 // /auth/logout.php
 session_start();
 
+// Define BASE_URL if not defined
+if (!defined('BASE_URL')) {
+    define('BASE_URL', '/online');
+}
+
 // Clear all session variables
 $_SESSION = array();
 
@@ -28,5 +33,5 @@ if (isset($_COOKIE['remember_token'])) {
 session_destroy();
 
 // Redirect to homepage with logout message
-header("Location: " . dirname($_SERVER['PHP_SELF']) . "/../?logout=success");
+header("Location: " . BASE_URL . "/?logout=success");
 exit();

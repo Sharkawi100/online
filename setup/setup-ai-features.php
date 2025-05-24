@@ -9,139 +9,172 @@ $messages = [];
 $errors = [];
 
 try {
+    // Start transaction
     $pdo->beginTransaction();
 
-    // Execute the SQL commands from our setup script
-    $sql = file_get_contents(__DIR__ . '/ai-setup.sql');
-
-    if (!$sql) {
-        // If file doesn't exist, use inline SQL
-        $sql = "
--- API Settings Table
-CREATE TABLE IF NOT EXISTS api_settings (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    provider ENUM('openai', 'claude') NOT NULL,
-    api_key TEXT NOT NULL,
-    model VARCHAR(50) NOT NULL DEFAULT 'gpt-4',
-    is_active TINYINT(1) DEFAULT 1,
-    usage_count INT UNSIGNED DEFAULT 0,
-    last_used TIMESTAMP NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_provider (provider, is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Quiz Texts Table for Reading Comprehension
-CREATE TABLE IF NOT EXISTS quiz_texts (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    quiz_id INT UNSIGNED,
-    text_title VARCHAR(255) NOT NULL,
-    text_content LONGTEXT NOT NULL,
-    source ENUM('manual', 'ai_generated') DEFAULT 'manual',
-    reading_time INT UNSIGNED DEFAULT 0 COMMENT 'Estimated reading time in seconds',
-    created_by INT UNSIGNED,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by) REFERENCES users(id),
-    INDEX idx_quiz (quiz_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- AI Generation Logs
-CREATE TABLE IF NOT EXISTS ai_generation_logs (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    teacher_id INT UNSIGNED NOT NULL,
-    provider VARCHAR(20) NOT NULL,
-    prompt_type ENUM('general', 'text_based', 'custom') NOT NULL,
-    subject_id INT UNSIGNED,
-    grade TINYINT UNSIGNED,
-    difficulty VARCHAR(10),
-    questions_generated INT UNSIGNED DEFAULT 0,
-    tokens_used INT UNSIGNED DEFAULT 0,
-    cost_estimate DECIMAL(10,4) DEFAULT 0.0000,
-    request_data JSON,
-    response_data JSON,
-    success TINYINT(1) DEFAULT 1,
-    error_message TEXT,
-    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (teacher_id) REFERENCES users(id),
-    FOREIGN KEY (subject_id) REFERENCES subjects(id),
-    INDEX idx_teacher (teacher_id),
-    INDEX idx_generated (generated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- AI Prompt Templates
-CREATE TABLE IF NOT EXISTS ai_prompt_templates (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    prompt_template TEXT NOT NULL,
-    subject_id INT UNSIGNED,
-    grade_range_start TINYINT UNSIGNED,
-    grade_range_end TINYINT UNSIGNED,
-    is_active TINYINT(1) DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (subject_id) REFERENCES subjects(id),
-    INDEX idx_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        ";
+    // API Settings Table
+    try {
+        $sql = "CREATE TABLE IF NOT EXISTS api_settings (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            provider ENUM('openai', 'claude') NOT NULL,
+            api_key TEXT NOT NULL,
+            model VARCHAR(50) NOT NULL DEFAULT 'gpt-4',
+            is_active TINYINT(1) DEFAULT 1,
+            usage_count INT UNSIGNED DEFAULT 0,
+            last_used TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_provider (provider, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        $pdo->exec($sql);
+        $messages[] = "✓ Created api_settings table";
+    } catch (PDOException $e) {
+        if (strpos($e->getMessage(), 'already exists') !== false) {
+            $messages[] = "Table api_settings already exists (skipped)";
+        } else {
+            throw $e;
+        }
     }
 
-    // Execute each statement separately
-    $statements = array_filter(array_map('trim', explode(';', $sql)));
-    foreach ($statements as $statement) {
-        if (!empty($statement)) {
-            try {
-                $pdo->exec($statement);
-                $messages[] = "✓ Executed: " . substr($statement, 0, 50) . "...";
-            } catch (PDOException $e) {
-                if (strpos($e->getMessage(), 'already exists') !== false) {
-                    $messages[] = "Table already exists (skipped)";
-                } else {
-                    throw $e;
-                }
-            }
+    // Quiz Texts Table for Reading Comprehension
+    try {
+        $sql = "CREATE TABLE IF NOT EXISTS quiz_texts (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            quiz_id INT UNSIGNED,
+            text_title VARCHAR(255) NOT NULL,
+            text_content LONGTEXT NOT NULL,
+            source ENUM('manual', 'ai_generated') DEFAULT 'manual',
+            reading_time INT UNSIGNED DEFAULT 0 COMMENT 'Estimated reading time in seconds',
+            created_by INT UNSIGNED,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
+            FOREIGN KEY (created_by) REFERENCES users(id),
+            INDEX idx_quiz (quiz_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        $pdo->exec($sql);
+        $messages[] = "✓ Created quiz_texts table";
+    } catch (PDOException $e) {
+        if (strpos($e->getMessage(), 'already exists') !== false) {
+            $messages[] = "Table quiz_texts already exists (skipped)";
+        } else {
+            throw $e;
+        }
+    }
+
+    // AI Generation Logs
+    try {
+        // Use LONGTEXT instead of JSON for older MySQL versions
+        $sql = "CREATE TABLE IF NOT EXISTS ai_generation_logs (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            teacher_id INT UNSIGNED NOT NULL,
+            provider VARCHAR(20) NOT NULL,
+            prompt_type ENUM('general', 'text_based', 'custom') NOT NULL,
+            subject_id INT UNSIGNED,
+            grade TINYINT UNSIGNED,
+            difficulty VARCHAR(10),
+            questions_generated INT UNSIGNED DEFAULT 0,
+            tokens_used INT UNSIGNED DEFAULT 0,
+            cost_estimate DECIMAL(10,4) DEFAULT 0.0000,
+            request_data LONGTEXT,
+            response_data LONGTEXT,
+            success TINYINT(1) DEFAULT 1,
+            error_message TEXT,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (teacher_id) REFERENCES users(id),
+            FOREIGN KEY (subject_id) REFERENCES subjects(id),
+            INDEX idx_teacher (teacher_id),
+            INDEX idx_generated (generated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        $pdo->exec($sql);
+        $messages[] = "✓ Created ai_generation_logs table";
+    } catch (PDOException $e) {
+        if (strpos($e->getMessage(), 'already exists') !== false) {
+            $messages[] = "Table ai_generation_logs already exists (skipped)";
+        } else {
+            throw $e;
+        }
+    }
+
+    // AI Prompt Templates
+    try {
+        $sql = "CREATE TABLE IF NOT EXISTS ai_prompt_templates (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+            prompt_template TEXT NOT NULL,
+            subject_id INT UNSIGNED,
+            grade_range_start TINYINT UNSIGNED,
+            grade_range_end TINYINT UNSIGNED,
+            is_active TINYINT(1) DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (subject_id) REFERENCES subjects(id),
+            INDEX idx_active (is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        $pdo->exec($sql);
+        $messages[] = "✓ Created ai_prompt_templates table";
+    } catch (PDOException $e) {
+        if (strpos($e->getMessage(), 'already exists') !== false) {
+            $messages[] = "Table ai_prompt_templates already exists (skipped)";
+        } else {
+            throw $e;
         }
     }
 
     // Add columns to existing tables
-    $alterQueries = [
-        "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS has_text TINYINT(1) DEFAULT 0 AFTER is_practice",
-        "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS text_id INT UNSIGNED NULL AFTER has_text",
-        "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS ai_generated TINYINT(1) DEFAULT 0 AFTER text_id",
-        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_text_based TINYINT(1) DEFAULT 0 AFTER question_type",
-        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS ai_generated TINYINT(1) DEFAULT 0 AFTER is_text_based"
+    // Check if columns exist before adding them
+    $columnChecks = [
+        ['quizzes', 'has_text', "ALTER TABLE quizzes ADD COLUMN has_text TINYINT(1) DEFAULT 0 AFTER is_practice"],
+        ['quizzes', 'text_id', "ALTER TABLE quizzes ADD COLUMN text_id INT UNSIGNED NULL AFTER has_text"],
+        ['quizzes', 'ai_generated', "ALTER TABLE quizzes ADD COLUMN ai_generated TINYINT(1) DEFAULT 0 AFTER text_id"],
+        ['questions', 'is_text_based', "ALTER TABLE questions ADD COLUMN is_text_based TINYINT(1) DEFAULT 0 AFTER question_type"],
+        ['questions', 'ai_generated', "ALTER TABLE questions ADD COLUMN ai_generated TINYINT(1) DEFAULT 0 AFTER is_text_based"]
     ];
 
-    foreach ($alterQueries as $query) {
-        try {
-            $pdo->exec($query);
-            $messages[] = "✓ " . substr($query, 0, 60) . "...";
-        } catch (PDOException $e) {
-            if (strpos($e->getMessage(), 'Duplicate column') !== false) {
-                $messages[] = "Column already exists (skipped)";
-            } else {
-                throw $e;
+    foreach ($columnChecks as $check) {
+        $table = $check[0];
+        $column = $check[1];
+        $query = $check[2];
+
+        // Check if column exists
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = ? 
+            AND COLUMN_NAME = ?
+        ");
+        $stmt->execute([$table, $column]);
+
+        if ($stmt->fetchColumn() == 0) {
+            try {
+                $pdo->exec($query);
+                $messages[] = "✓ Added column $column to $table";
+            } catch (PDOException $e) {
+                $errors[] = "Failed to add column $column to $table: " . $e->getMessage();
             }
+        } else {
+            $messages[] = "Column $column already exists in $table (skipped)";
         }
     }
 
     // Add AI settings
     $settings = [
-        ['ai_enabled', 'true', 'boolean', 'Enable AI quiz generation'],
-        ['ai_default_provider', 'openai', 'string', 'Default AI provider'],
-        ['ai_monthly_limit', '1000', 'number', 'Monthly AI generation limit per teacher'],
-        ['ai_cost_per_question', '0.05', 'number', 'Estimated cost per AI generated question'],
-        ['ai_max_questions_per_request', '10', 'number', 'Maximum questions per AI request'],
-        ['text_editor_enabled', 'true', 'boolean', 'Enable rich text editor']
+        ['ai_enabled', 'true', 'boolean'],
+        ['ai_default_provider', 'openai', 'string'],
+        ['ai_monthly_limit', '1000', 'number'],
+        ['ai_cost_per_question', '0.05', 'number'],
+        ['ai_max_questions_per_request', '10', 'number'],
+        ['text_editor_enabled', 'true', 'boolean']
     ];
 
+    $stmt = $pdo->prepare("
+        INSERT INTO settings (setting_key, setting_value, setting_type)
+        VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE setting_value = setting_value
+    ");
+
     foreach ($settings as $setting) {
-        $stmt = $pdo->prepare("
-            INSERT INTO settings (setting_key, setting_value, setting_type, description)
-            VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE updated_at = NOW()
-        ");
         $stmt->execute($setting);
     }
     $messages[] = "✓ AI settings configured";
@@ -162,36 +195,54 @@ CREATE TABLE IF NOT EXISTS ai_prompt_templates (
         ]
     ];
 
+    $stmt = $pdo->prepare("
+        INSERT IGNORE INTO ai_prompt_templates (name, description, prompt_template, subject_id)
+        VALUES (?, ?, ?, ?)
+    ");
+
     foreach ($templates as $template) {
-        $stmt = $pdo->prepare("
-            INSERT IGNORE INTO ai_prompt_templates (name, description, prompt_template, subject_id)
-            VALUES (?, ?, ?, ?)
-        ");
         $stmt->execute($template);
     }
     $messages[] = "✓ Prompt templates added";
 
     // Create directories
     $directories = [
-        '../teacher/ajax'
+        '../teacher',
+        '../teacher/ajax',
+        '../teacher/quizzes'
     ];
 
     foreach ($directories as $dir) {
         if (!is_dir($dir)) {
-            if (mkdir($dir, 0755, true)) {
+            if (@mkdir($dir, 0755, true)) {
                 $messages[] = "✓ Created directory: $dir";
             } else {
-                $errors[] = "Failed to create directory: $dir";
+                $errors[] = "Failed to create directory: $dir (may already exist)";
             }
+        } else {
+            $messages[] = "Directory already exists: $dir";
         }
     }
 
-    $pdo->commit();
-    $messages[] = "✅ AI features setup completed successfully!";
+    // Check if we're still in a transaction before committing
+    if ($pdo->inTransaction()) {
+        $pdo->commit();
+        $messages[] = "✅ AI features setup completed successfully!";
+    } else {
+        $messages[] = "✅ Setup completed (no transaction to commit)";
+    }
 
 } catch (Exception $e) {
-    $pdo->rollBack();
+    // Only rollback if transaction is active
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     $errors[] = "Setup failed: " . $e->getMessage();
+}
+
+// Check if BASE_URL is defined
+if (!defined('BASE_URL')) {
+    define('BASE_URL', '/online');
 }
 ?>
 <!DOCTYPE html>

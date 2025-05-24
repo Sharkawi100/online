@@ -2,12 +2,21 @@
 // /includes/ai_functions.php
 // AI Quiz Generation Functions
 
+// Ensure database connection is available
+if (!isset($pdo)) {
+    require_once __DIR__ . '/../config/database.php';
+}
+
 /**
  * Get active AI provider settings
  */
 function getActiveAIProvider()
 {
     global $pdo;
+
+    if (!$pdo) {
+        throw new Exception('Database connection not available');
+    }
 
     $stmt = $pdo->prepare("SELECT * FROM api_settings WHERE is_active = 1 ORDER BY provider = ? DESC LIMIT 1");
     $stmt->execute([getSetting('ai_default_provider', 'openai')]);
@@ -19,6 +28,8 @@ function getActiveAIProvider()
  */
 function callOpenAI($prompt, $model = 'gpt-4', $temperature = 0.7, $max_tokens = 2000)
 {
+    global $pdo;
+
     $provider = getActiveAIProvider();
     if (!$provider || $provider['provider'] !== 'openai') {
         throw new Exception('OpenAI provider not configured');
@@ -79,6 +90,8 @@ function callOpenAI($prompt, $model = 'gpt-4', $temperature = 0.7, $max_tokens =
  */
 function callClaude($prompt, $model = 'claude-3-opus-20240229', $temperature = 0.7, $max_tokens = 2000)
 {
+    global $pdo;
+
     $provider = getActiveAIProvider();
     if (!$provider || $provider['provider'] !== 'claude') {
         throw new Exception('Claude provider not configured');
@@ -474,8 +487,13 @@ function encryptApiKey($key)
 {
     // Simple encryption - in production, use proper encryption
     $method = 'AES-256-CBC';
-    $secret_key = hash('sha256', DB_PASS . 'ai_keys');
-    $secret_iv = substr(hash('sha256', DB_NAME), 0, 16);
+
+    // Use a fixed secret key if DB constants are not defined
+    $db_pass = defined('DB_PASS') ? DB_PASS : 'default_secret_key';
+    $db_name = defined('DB_NAME') ? DB_NAME : 'default_db_name';
+
+    $secret_key = hash('sha256', $db_pass . 'ai_keys');
+    $secret_iv = substr(hash('sha256', $db_name), 0, 16);
 
     return openssl_encrypt($key, $method, $secret_key, 0, $secret_iv);
 }
@@ -486,8 +504,13 @@ function encryptApiKey($key)
 function decryptApiKey($encrypted_key)
 {
     $method = 'AES-256-CBC';
-    $secret_key = hash('sha256', DB_PASS . 'ai_keys');
-    $secret_iv = substr(hash('sha256', DB_NAME), 0, 16);
+
+    // Use a fixed secret key if DB constants are not defined
+    $db_pass = defined('DB_PASS') ? DB_PASS : 'default_secret_key';
+    $db_name = defined('DB_NAME') ? DB_NAME : 'default_db_name';
+
+    $secret_key = hash('sha256', $db_pass . 'ai_keys');
+    $secret_iv = substr(hash('sha256', $db_name), 0, 16);
 
     return openssl_decrypt($encrypted_key, $method, $secret_key, 0, $secret_iv);
 }
@@ -497,6 +520,8 @@ function decryptApiKey($encrypted_key)
  */
 function generateReadingText($params)
 {
+    global $pdo;
+
     $prompt = "اكتب نصًا تعليميًا باللغة العربية مناسبًا للصف {$params['grade']} ";
     $prompt .= "في موضوع: {$params['topic']}\n";
     $prompt .= "يجب أن يكون النص:\n";
@@ -531,3 +556,4 @@ function calculateReadingTime($text)
 
     return max(30, round($seconds)); // Minimum 30 seconds
 }
+?>

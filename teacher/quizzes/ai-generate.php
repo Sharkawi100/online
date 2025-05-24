@@ -1,77 +1,119 @@
 <?php
-// /teacher/quizzes/ai-generate.php
+// teacher/quizzes/ai-generate.php
 require_once '../../config/database.php';
 require_once '../../includes/functions.php';
 require_once '../../includes/ai_functions.php';
 
-// Check if user is logged in and is a teacher or admin
-if (!isLoggedIn() || (!hasRole('teacher') && !hasRole('admin'))) {
+// Define BASE_URL if not defined
+if (!defined('BASE_URL')) {
+    define('BASE_URL', '/online');
+}
+
+// Check if user is logged in and is a teacher
+if (!isLoggedIn() || (!hasRole('admin') && !hasRole('teacher'))) {
     redirect('/auth/login.php');
 }
 
-// Check if AI is enabled
-if (!getSetting('ai_enabled', true)) {
-    $_SESSION['error'] = 'خدمة الذكاء الاصطناعي غير مفعلة حالياً';
-    redirect('/teacher/quizzes/create.php');
+// Initialize variables
+$success = '';
+$error = '';
+$generated_questions = [];
+$ai_usage = null;
+
+// Get teacher's AI usage stats
+try {
+    $ai_usage = getTeacherAIUsage($_SESSION['user_id']);
+} catch (Exception $e) {
+    // AI might not be configured
 }
 
-$teacher_id = $_SESSION['user_id'];
-$error = '';
-$success = '';
-$generated_questions = [];
+// Check if AI is enabled
+$ai_enabled = getSetting('ai_enabled', false);
+if (!$ai_enabled) {
+    $error = 'ميزة الذكاء الاصطناعي غير مفعلة حالياً';
+}
 
-// Get subjects for dropdown
-$stmt = $pdo->query("SELECT * FROM subjects ORDER BY name_ar");
-$subjects = $stmt->fetchAll();
-
-// Get teacher's AI usage
-$usage = getTeacherAIUsage($teacher_id);
-
-// Handle AI generation request
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate'])) {
+// Handle form submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $ai_enabled) {
     if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
         $error = 'خطأ في الحماية. يرجى المحاولة مرة أخرى.';
     } else {
-        try {
-            $params = [
-                'teacher_id' => $teacher_id,
-                'type' => $_POST['generation_type'],
-                'subject_id' => $_POST['subject_id'] ?: null,
-                'subject' => $_POST['subject_id'] ? null : sanitize($_POST['custom_subject']),
-                'grade' => (int) $_POST['grade'],
-                'difficulty' => $_POST['difficulty'],
-                'count' => min((int) $_POST['question_count'], getSetting('ai_max_questions_per_request', 10)),
-                'topic' => sanitize($_POST['topic'] ?? ''),
-                'text' => $_POST['generation_type'] === 'text_based' ? sanitize($_POST['quiz_text']) : null
-            ];
+        // Validate inputs
+        $errors = [];
+        $subject_id = (int) ($_POST['subject_id'] ?? 0);
+        $grade = (int) ($_POST['grade'] ?? 0);
+        $difficulty = sanitize($_POST['difficulty'] ?? 'medium');
+        $question_count = (int) ($_POST['question_count'] ?? 5);
+        $generation_type = sanitize($_POST['generation_type'] ?? 'general');
+        $topic = sanitize($_POST['topic'] ?? '');
+        $text_content = $_POST['text_content'] ?? '';
 
-            $result = generateQuizQuestions($params);
-            $generated_questions = $result['questions'];
+        if (empty($subject_id))
+            $errors[] = 'يرجى اختيار المادة';
+        if (empty($grade))
+            $errors[] = 'يرجى اختيار الصف';
+        if ($question_count < 1 || $question_count > 20)
+            $errors[] = 'عدد الأسئلة يجب أن يكون بين 1 و 20';
 
-            if (empty($generated_questions)) {
-                $error = 'لم يتم توليد أي أسئلة. يرجى المحاولة مرة أخرى.';
-            } else {
-                $_SESSION['ai_generated_questions'] = $generated_questions;
-                $_SESSION['ai_generation_params'] = $params;
-                $success = 'تم توليد ' . count($generated_questions) . ' سؤال بنجاح!';
+        if ($generation_type === 'text_based' && empty($text_content)) {
+            $errors[] = 'يرجى إدخال النص للقراءة';
+        }
+
+        if (empty($errors)) {
+            try {
+                // Prepare parameters for AI generation
+                $params = [
+                    'teacher_id' => $_SESSION['user_id'],
+                    'subject' => $subject_id,  // Important: use 'subject' not 'subject_id'
+                    'subject_id' => $subject_id,
+                    'grade' => $grade,
+                    'difficulty' => $difficulty,
+                    'count' => $question_count,
+                    'type' => $generation_type,
+                    'topic' => $topic
+                ];
+
+                if ($generation_type === 'text_based') {
+                    $params['text'] = $text_content;
+                }
+
+                // Generate questions
+                $result = generateQuizQuestions($params);
+                $generated_questions = $result['questions'];
+
+                // Store in session to pass to create.php
+                $_SESSION['ai_questions'] = array_map(function ($q) {
+                    return [
+                        'text' => $q['question_text'],
+                        'options' => array_map(function ($opt) {
+                            return ['text' => $opt];
+                        }, $q['options']),
+                        'correct' => $q['correct_index'],
+                        'points' => 10,
+                        'ai_generated' => true
+                    ];
+                }, $generated_questions);
+
+                $success = sprintf(
+                    'تم توليد %d سؤال بنجاح! (استخدم %d رمز)',
+                    count($generated_questions),
+                    $result['tokens_used']
+                );
+
+                // Update usage stats
+                $ai_usage = getTeacherAIUsage($_SESSION['user_id']);
+
+            } catch (Exception $e) {
+                $error = 'خطأ في توليد الأسئلة: ' . $e->getMessage();
             }
-
-        } catch (Exception $e) {
-            $error = 'خطأ في توليد الأسئلة: ' . $e->getMessage();
+        } else {
+            $error = implode('<br>', $errors);
         }
     }
 }
 
-// Handle saving to quiz
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_to_quiz'])) {
-    if (isset($_SESSION['ai_generated_questions'])) {
-        $_SESSION['quiz_creation_data'] = [
-            'questions' => $_SESSION['ai_generated_questions'],
-            'params' => $_SESSION['ai_generation_params']
-        ];
-        redirect('/teacher/quizzes/create.php?ai_generated=1');
-    }
-}
+// Get subjects for dropdown
+$subjects = $pdo->query("SELECT * FROM subjects WHERE is_active = 1 ORDER BY order_index")->fetchAll();
 
 $csrf_token = generateCSRF();
 ?>
@@ -81,7 +123,7 @@ $csrf_token = generateCSRF();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>توليد اختبار بالذكاء الاصطناعي - <?= e(getSetting('site_name')) ?></title>
+    <title>توليد الأسئلة بالذكاء الاصطناعي - <?= e(getSetting('site_name', 'منصة الاختبارات')) ?></title>
 
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.min.css" rel="stylesheet">
@@ -89,436 +131,310 @@ $csrf_token = generateCSRF();
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700&display=swap" rel="stylesheet">
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-    <!-- TinyMCE for rich text editing -->
-    <script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
-
     <style>
         body {
             font-family: 'Tajawal', sans-serif;
         }
 
-        .ai-glow {
-            animation: pulse 2s infinite;
-            box-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+        .loading-dots::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
         }
 
-        @keyframes pulse {
+        @keyframes dots {
 
             0%,
-            100% {
-                opacity: 1;
+            20% {
+                content: '';
             }
 
-            50% {
-                opacity: 0.8;
+            40% {
+                content: '.';
+            }
+
+            60% {
+                content: '..';
+            }
+
+            80%,
+            100% {
+                content: '...';
             }
         }
     </style>
 </head>
 
-<body class="bg-gray-50" x-data="aiGenerator()">
-    <!-- Navigation -->
+<body class="bg-gray-50" x-data="aiGenerator">
+    <!-- Header -->
     <div class="navbar bg-base-100 shadow-lg">
         <div class="flex-1">
-            <a href="<?= BASE_URL ?>/teacher/" class="btn btn-ghost normal-case text-xl">
-                <i class="fas fa-chalkboard-teacher ml-2"></i>
-                لوحة المعلم
+            <a href="/teacher/dashboard.php" class="btn btn-ghost text-xl">
+                <i class="fas fa-graduation-cap ml-2"></i>
+                <?= e(getSetting('site_name', 'منصة الاختبارات')) ?>
             </a>
         </div>
         <div class="flex-none">
-            <!-- AI Usage Badge -->
-            <div class="badge badge-lg badge-primary gap-2 ml-4">
-                <i class="fas fa-robot"></i>
-                <span><?= $usage['remaining'] ?>/<?= $usage['monthly_limit'] ?> متبقي</span>
-            </div>
-
-            <div class="dropdown dropdown-end">
-                <label tabindex="0" class="btn btn-ghost">
-                    <i class="fas fa-user-circle text-2xl"></i>
-                </label>
-                <ul tabindex="0"
-                    class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-100 rounded-box w-52">
-                    <li><a href="<?= BASE_URL ?>/teacher/profile.php"><i class="fas fa-user ml-2"></i> الملف الشخصي</a>
-                    </li>
-                    <li><a href="<?= BASE_URL ?>/auth/logout.php"><i class="fas fa-sign-out-alt ml-2"></i> تسجيل
-                            الخروج</a></li>
-                </ul>
-            </div>
+            <a href="create.php" class="btn btn-ghost">
+                <i class="fas fa-arrow-right ml-2"></i>
+                العودة لإنشاء الاختبار
+            </a>
         </div>
     </div>
 
-    <div class="container mx-auto px-4 py-8">
-        <!-- Header -->
-        <div class="mb-8">
-            <h1 class="text-3xl font-bold mb-2">
-                <i class="fas fa-magic text-purple-600 ml-2"></i>
-                توليد اختبار بالذكاء الاصطناعي
-            </h1>
-            <div class="breadcrumbs text-sm">
-                <ul>
-                    <li><a href="<?= BASE_URL ?>/teacher/"><i class="fas fa-home ml-2"></i> الرئيسية</a></li>
-                    <li><a href="<?= BASE_URL ?>/teacher/quizzes/">الاختبارات</a></li>
-                    <li>توليد بالذكاء الاصطناعي</li>
-                </ul>
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <h1 class="text-3xl font-bold mb-8">
+            <i class="fas fa-magic text-primary ml-2"></i>
+            توليد الأسئلة بالذكاء الاصطناعي
+        </h1>
+
+        <?php if ($ai_usage && $ai_enabled): ?>
+            <!-- Usage Stats -->
+            <div class="stats shadow mb-6 w-full">
+                <div class="stat">
+                    <div class="stat-figure text-primary">
+                        <i class="fas fa-chart-line text-3xl"></i>
+                    </div>
+                    <div class="stat-title">الاستخدام الشهري</div>
+                    <div class="stat-value"><?= $ai_usage['total_generations'] ?> / <?= $ai_usage['monthly_limit'] ?></div>
+                    <div class="stat-desc">
+                        <progress class="progress progress-primary w-56" value="<?= $ai_usage['percentage_used'] ?>"
+                            max="100"></progress>
+                    </div>
+                </div>
+
+                <div class="stat">
+                    <div class="stat-figure text-secondary">
+                        <i class="fas fa-question-circle text-3xl"></i>
+                    </div>
+                    <div class="stat-title">الأسئلة المولدة</div>
+                    <div class="stat-value"><?= $ai_usage['total_questions'] ?? 0 ?></div>
+                    <div class="stat-desc">هذا الشهر</div>
+                </div>
+
+                <div class="stat">
+                    <div class="stat-figure text-accent">
+                        <i class="fas fa-bolt text-3xl"></i>
+                    </div>
+                    <div class="stat-title">المتبقي</div>
+                    <div class="stat-value text-accent"><?= $ai_usage['remaining'] ?></div>
+                    <div class="stat-desc">توليد</div>
+                </div>
             </div>
-        </div>
+        <?php endif; ?>
 
         <?php if ($error): ?>
             <div class="alert alert-error mb-6">
                 <i class="fas fa-exclamation-circle"></i>
-                <span><?= e($error) ?></span>
+                <span><?= $error ?></span>
             </div>
         <?php endif; ?>
 
         <?php if ($success): ?>
             <div class="alert alert-success mb-6">
                 <i class="fas fa-check-circle"></i>
-                <span><?= e($success) ?></span>
+                <span><?= $success ?></span>
+                <a href="create.php" class="btn btn-sm btn-ghost">
+                    الذهاب لإنشاء الاختبار
+                    <i class="fas fa-arrow-left mr-2"></i>
+                </a>
             </div>
         <?php endif; ?>
 
-        <!-- AI Usage Stats -->
-        <div class="stats shadow mb-8 w-full">
-            <div class="stat">
-                <div class="stat-figure text-primary">
-                    <i class="fas fa-robot text-3xl"></i>
-                </div>
-                <div class="stat-title">استخدامك الشهري</div>
-                <div class="stat-value text-primary"><?= $usage['total_generations'] ?></div>
-                <div class="stat-desc">من <?= $usage['monthly_limit'] ?> توليد</div>
-            </div>
+        <?php if ($ai_enabled): ?>
+            <form method="POST" @submit="handleSubmit">
+                <input type="hidden" name="csrf_token" value="<?= $csrf_token ?>">
 
-            <div class="stat">
-                <div class="stat-figure text-secondary">
-                    <i class="fas fa-question-circle text-3xl"></i>
-                </div>
-                <div class="stat-title">الأسئلة المولدة</div>
-                <div class="stat-value text-secondary"><?= $usage['total_questions'] ?? 0 ?></div>
-                <div class="stat-desc">هذا الشهر</div>
-            </div>
+                <!-- Generation Settings -->
+                <div class="card bg-base-100 shadow-xl mb-6">
+                    <div class="card-body">
+                        <h2 class="card-title mb-4">
+                            <i class="fas fa-cog text-primary"></i>
+                            إعدادات التوليد
+                        </h2>
 
-            <div class="stat">
-                <div class="stat-figure text-accent">
-                    <i class="fas fa-coins text-3xl"></i>
-                </div>
-                <div class="stat-title">التكلفة التقديرية</div>
-                <div class="stat-value text-accent">$<?= number_format($usage['total_cost'] ?? 0, 2) ?></div>
-                <div class="stat-desc">هذا الشهر</div>
-            </div>
-        </div>
-
-        <!-- Generation Form -->
-        <form method="POST" class="space-y-6">
-            <input type="hidden" name="csrf_token" value="<?= $csrf_token ?>">
-            <input type="hidden" name="generate" value="1">
-
-            <!-- Generation Type Selection -->
-            <div class="card bg-base-100 shadow-xl">
-                <div class="card-body">
-                    <h2 class="card-title mb-4">
-                        <i class="fas fa-cog text-primary"></i>
-                        نوع التوليد
-                    </h2>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <label class="card bg-base-200 cursor-pointer hover:shadow-lg transition-shadow"
-                            :class="{ 'ring-2 ring-primary ai-glow': generationType === 'general' }">
-                            <div class="card-body">
-                                <div class="flex items-start gap-4">
-                                    <input type="radio" name="generation_type" value="general" x-model="generationType"
-                                        class="radio radio-primary">
-                                    <div>
-                                        <h3 class="font-bold text-lg">أسئلة عامة</h3>
-                                        <p class="text-sm text-gray-600 mt-1">
-                                            توليد أسئلة في أي موضوع دراسي
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        </label>
-
-                        <label class="card bg-base-200 cursor-pointer hover:shadow-lg transition-shadow"
-                            :class="{ 'ring-2 ring-primary ai-glow': generationType === 'text_based' }">
-                            <div class="card-body">
-                                <div class="flex items-start gap-4">
-                                    <input type="radio" name="generation_type" value="text_based"
-                                        x-model="generationType" class="radio radio-primary">
-                                    <div>
-                                        <h3 class="font-bold text-lg">فهم المقروء</h3>
-                                        <p class="text-sm text-gray-600 mt-1">
-                                            أسئلة بناءً على نص معين
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Quiz Parameters -->
-            <div class="card bg-base-100 shadow-xl">
-                <div class="card-body">
-                    <h2 class="card-title mb-4">
-                        <i class="fas fa-sliders-h text-primary"></i>
-                        إعدادات الاختبار
-                    </h2>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- Subject -->
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">المادة *</span>
-                            </label>
-                            <select name="subject_id" class="select select-bordered" x-model="subjectId" required>
-                                <option value="">اختر المادة</option>
-                                <?php foreach ($subjects as $subject): ?>
-                                    <option value="<?= $subject['id'] ?>"><?= e($subject['name_ar']) ?></option>
-                                <?php endforeach; ?>
-                                <option value="0">مادة أخرى...</option>
-                            </select>
-                        </div>
-
-                        <!-- Custom Subject -->
-                        <div class="form-control" x-show="subjectId === '0'" x-transition>
-                            <label class="label">
-                                <span class="label-text">اسم المادة *</span>
-                            </label>
-                            <input type="text" name="custom_subject" class="input input-bordered"
-                                placeholder="أدخل اسم المادة">
-                        </div>
-
-                        <!-- Grade -->
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">الصف الدراسي *</span>
-                            </label>
-                            <select name="grade" class="select select-bordered" required>
-                                <option value="">اختر الصف</option>
-                                <?php for ($i = 1; $i <= 12; $i++): ?>
-                                    <option value="<?= $i ?>"><?= getGradeName($i) ?></option>
-                                <?php endfor; ?>
-                            </select>
-                        </div>
-
-                        <!-- Difficulty -->
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">مستوى الصعوبة *</span>
-                            </label>
-                            <select name="difficulty" class="select select-bordered" required>
-                                <option value="easy">سهل</option>
-                                <option value="medium" selected>متوسط</option>
-                                <option value="hard">صعب</option>
-                            </select>
-                        </div>
-
-                        <!-- Question Count -->
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">عدد الأسئلة *</span>
-                                <span class="label-text-alt">الحد الأقصى:
-                                    <?= getSetting('ai_max_questions_per_request', 10) ?></span>
-                            </label>
-                            <input type="number" name="question_count" class="input input-bordered" min="1"
-                                max="<?= getSetting('ai_max_questions_per_request', 10) ?>" value="5" required>
-                        </div>
-
-                        <!-- Topic -->
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">الموضوع (اختياري)</span>
-                            </label>
-                            <input type="text" name="topic" class="input input-bordered"
-                                placeholder="مثال: الكسور، الخلية، القواعد النحوية">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Text Input for Text-Based Questions -->
-            <div class="card bg-base-100 shadow-xl" x-show="generationType === 'text_based'" x-transition>
-                <div class="card-body">
-                    <h2 class="card-title mb-4">
-                        <i class="fas fa-file-alt text-primary"></i>
-                        النص المقروء
-                    </h2>
-
-                    <div class="space-y-4">
-                        <!-- Text Input Options -->
-                        <div class="flex gap-4 mb-4">
-                            <button type="button" @click="textInputMethod = 'manual'"
-                                :class="{ 'btn-primary': textInputMethod === 'manual' }" class="btn btn-outline">
-                                <i class="fas fa-keyboard ml-2"></i>
-                                إدخال يدوي
-                            </button>
-                            <button type="button" @click="textInputMethod = 'generate'"
-                                :class="{ 'btn-primary': textInputMethod === 'generate' }" class="btn btn-outline">
-                                <i class="fas fa-magic ml-2"></i>
-                                توليد نص بالذكاء الاصطناعي
-                            </button>
-                        </div>
-
-                        <!-- Manual Text Input -->
-                        <div x-show="textInputMethod === 'manual'">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div class="form-control">
                                 <label class="label">
-                                    <span class="label-text">النص *</span>
-                                    <span class="label-text-alt">200-1000 كلمة</span>
+                                    <span class="label-text">نوع التوليد</span>
                                 </label>
-                                <textarea name="quiz_text" id="quiz_text" rows="10"></textarea>
-                            </div>
-                        </div>
-
-                        <!-- AI Text Generation -->
-                        <div x-show="textInputMethod === 'generate'" class="space-y-4">
-                            <div class="form-control">
-                                <label class="label">
-                                    <span class="label-text">موضوع النص</span>
-                                </label>
-                                <input type="text" x-model="textTopic" class="input input-bordered"
-                                    placeholder="مثال: الماء، الصحراء، التكنولوجيا">
-                            </div>
-                            <div class="form-control">
-                                <label class="label">
-                                    <span class="label-text">طول النص</span>
-                                </label>
-                                <select x-model="textLength" class="select select-bordered">
-                                    <option value="200">قصير (200 كلمة)</option>
-                                    <option value="400" selected>متوسط (400 كلمة)</option>
-                                    <option value="600">طويل (600 كلمة)</option>
+                                <select name="generation_type" x-model="generationType" class="select select-bordered">
+                                    <option value="general">أسئلة عامة</option>
+                                    <option value="text_based">أسئلة فهم المقروء</option>
                                 </select>
                             </div>
-                            <button type="button" @click="generateText()" :disabled="!textTopic || generatingText"
-                                class="btn btn-secondary">
-                                <i class="fas fa-magic ml-2" :class="{ 'fa-spin': generatingText }"></i>
-                                <span x-text="generatingText ? 'جاري التوليد...' : 'توليد النص'"></span>
-                            </button>
+
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">عدد الأسئلة</span>
+                                </label>
+                                <input type="number" name="question_count" value="5" class="input input-bordered" min="1"
+                                    max="20" required>
+                            </div>
+
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">المادة *</span>
+                                </label>
+                                <select name="subject_id" class="select select-bordered" required>
+                                    <option value="">اختر المادة</option>
+                                    <?php foreach ($subjects as $subject): ?>
+                                        <option value="<?= $subject['id'] ?>">
+                                            <?= e($subject['name_ar']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">الصف الدراسي *</span>
+                                </label>
+                                <select name="grade" class="select select-bordered" required>
+                                    <option value="">اختر الصف</option>
+                                    <?php for ($i = 1; $i <= 12; $i++): ?>
+                                        <option value="<?= $i ?>">
+                                            <?= getGradeName($i) ?>
+                                        </option>
+                                    <?php endfor; ?>
+                                </select>
+                            </div>
+
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">مستوى الصعوبة</span>
+                                </label>
+                                <select name="difficulty" class="select select-bordered">
+                                    <option value="easy">سهل</option>
+                                    <option value="medium" selected>متوسط</option>
+                                    <option value="hard">صعب</option>
+                                </select>
+                            </div>
+
+                            <div class="form-control" x-show="generationType === 'general'">
+                                <label class="label">
+                                    <span class="label-text">الموضوع (اختياري)</span>
+                                </label>
+                                <input type="text" name="topic" class="input input-bordered"
+                                    placeholder="مثال: الكسور العشرية">
+                            </div>
+                        </div>
+
+                        <!-- Text Input for Reading Comprehension -->
+                        <div class="form-control mt-4" x-show="generationType === 'text_based'" x-transition>
+                            <label class="label">
+                                <span class="label-text">النص للقراءة *</span>
+                            </label>
+                            <textarea name="text_content" class="textarea textarea-bordered" rows="8"
+                                placeholder="الصق أو اكتب النص هنا..."
+                                x-bind:required="generationType === 'text_based'"></textarea>
+                            <label class="label">
+                                <span class="label-text-alt">سيتم توليد أسئلة فهم واستيعاب بناءً على هذا النص</span>
+                            </label>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Submit Buttons -->
-            <div class="flex justify-between">
-                <a href="<?= BASE_URL ?>/teacher/quizzes/" class="btn btn-ghost">
-                    <i class="fas fa-arrow-right ml-2"></i>
-                    رجوع
-                </a>
-                <button type="submit" class="btn btn-primary btn-lg" :disabled="<?= $usage['remaining'] ?> <= 0">
-                    <i class="fas fa-magic ml-2"></i>
-                    توليد الأسئلة
-                </button>
-            </div>
-        </form>
+                <!-- Preview Generated Questions -->
+                <?php if (!empty($generated_questions)): ?>
+                    <div class="card bg-base-100 shadow-xl mb-6">
+                        <div class="card-body">
+                            <h2 class="card-title mb-4">
+                                <i class="fas fa-eye text-info"></i>
+                                معاينة الأسئلة المولدة
+                            </h2>
 
-        <?php if (!empty($generated_questions)): ?>
-            <!-- Generated Questions Preview -->
-            <div class="card bg-base-100 shadow-xl mt-8">
-                <div class="card-body">
-                    <h2 class="card-title mb-4">
-                        <i class="fas fa-eye text-primary"></i>
-                        معاينة الأسئلة المولدة
-                    </h2>
-
-                    <div class="space-y-4">
-                        <?php foreach ($generated_questions as $index => $question): ?>
-                            <div class="card bg-base-200">
-                                <div class="card-body">
-                                    <h3 class="font-bold">السؤال <?= $index + 1 ?>: <?= e($question['question_text']) ?></h3>
-                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-4">
-                                        <?php foreach ($question['options'] as $optIndex => $option): ?>
+                            <?php foreach ($generated_questions as $index => $question): ?>
+                                <div class="border rounded-lg p-4 mb-3 bg-base-200">
+                                    <h3 class="font-bold mb-2">السؤال <?= $index + 1 ?>:</h3>
+                                    <p class="mb-3"><?= e($question['question_text']) ?></p>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                        <?php foreach ($question['options'] as $oIndex => $option): ?>
                                             <div
-                                                class="flex items-center gap-2 
-                                                        <?= $optIndex == $question['correct_index'] ? 'text-success font-bold' : '' ?>">
-                                                <span><?= chr(1571 + $optIndex) ?>)</span>
+                                                class="flex items-center gap-2 <?= $oIndex == $question['correct_index'] ? 'text-success font-bold' : '' ?>">
+                                                <span><?= ['أ', 'ب', 'ج', 'د'][$oIndex] ?>)</span>
                                                 <span><?= e($option) ?></span>
-                                                <?php if ($optIndex == $question['correct_index']): ?>
+                                                <?php if ($oIndex == $question['correct_index']): ?>
                                                     <i class="fas fa-check-circle text-success"></i>
                                                 <?php endif; ?>
                                             </div>
                                         <?php endforeach; ?>
                                     </div>
                                 </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
+                            <?php endforeach; ?>
 
-                    <form method="POST" class="mt-6">
-                        <input type="hidden" name="csrf_token" value="<?= $csrf_token ?>">
-                        <input type="hidden" name="save_to_quiz" value="1">
-                        <div class="flex gap-3 justify-end">
-                            <button type="button" onclick="location.reload()" class="btn btn-ghost">
-                                <i class="fas fa-redo ml-2"></i>
-                                إعادة التوليد
-                            </button>
-                            <button type="submit" class="btn btn-success">
-                                <i class="fas fa-save ml-2"></i>
-                                حفظ وإنشاء اختبار
-                            </button>
+                            <div class="card-actions justify-end mt-4">
+                                <a href="create.php" class="btn btn-primary">
+                                    <i class="fas fa-check ml-2"></i>
+                                    استخدام هذه الأسئلة
+                                </a>
+                                <button type="submit" name="regenerate" value="1" class="btn btn-ghost">
+                                    <i class="fas fa-redo ml-2"></i>
+                                    إعادة التوليد
+                                </button>
+                            </div>
                         </div>
-                    </form>
+                    </div>
+                <?php endif; ?>
+
+                <!-- Actions -->
+                <div class="flex justify-between">
+                    <a href="create.php" class="btn btn-ghost">
+                        <i class="fas fa-times ml-2"></i>
+                        إلغاء
+                    </a>
+                    <button type="submit" class="btn btn-primary" :disabled="isLoading">
+                        <span x-show="!isLoading">
+                            <i class="fas fa-magic ml-2"></i>
+                            توليد الأسئلة
+                        </span>
+                        <span x-show="isLoading" class="loading-dots">
+                            <i class="fas fa-spinner fa-spin ml-2"></i>
+                            جاري التوليد
+                        </span>
+                    </button>
+                </div>
+            </form>
+        <?php else: ?>
+            <div class="alert alert-warning">
+                <i class="fas fa-exclamation-triangle"></i>
+                <div>
+                    <h3 class="font-bold">ميزة الذكاء الاصطناعي غير متاحة</h3>
+                    <p>يرجى التواصل مع الإدارة لتفعيل هذه الميزة</p>
                 </div>
             </div>
         <?php endif; ?>
+
+        <!-- Tips -->
+        <div class="card bg-info text-info-content mt-6">
+            <div class="card-body">
+                <h2 class="card-title">
+                    <i class="fas fa-lightbulb"></i>
+                    نصائح للحصول على أفضل النتائج
+                </h2>
+                <ul class="list-disc list-inside space-y-1">
+                    <li>كن دقيقاً في اختيار المادة والصف للحصول على أسئلة مناسبة</li>
+                    <li>عند استخدام فهم المقروء، اختر نصوصاً واضحة ومناسبة للفئة العمرية</li>
+                    <li>يمكنك تحديد موضوع معين للحصول على أسئلة أكثر تخصصاً</li>
+                    <li>راجع الأسئلة المولدة وعدّلها حسب الحاجة قبل حفظ الاختبار</li>
+                </ul>
+            </div>
+        </div>
     </div>
 
     <script>
-        function aiGenerator() {
-            return {
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('aiGenerator', () => ({
                 generationType: 'general',
-                subjectId: '',
-                textInputMethod: 'manual',
-                textTopic: '',
-                textLength: '400',
-                generatingText: false,
+                isLoading: false,
 
-                init() {
-                    // Initialize TinyMCE
-                    tinymce.init({
-                        selector: '#quiz_text',
-                        height: 400,
-                        language: 'ar',
-                        directionality: 'rtl',
-                        plugins: 'lists link image table code help wordcount',
-                        toolbar: 'undo redo | formatselect | bold italic | alignright aligncenter alignleft | bullist numlist | removeformat',
-                        menubar: false,
-                        content_style: 'body { font-family: Tajawal, Arial; font-size: 14pt; }'
-                    });
-                },
-
-                async generateText() {
-                    if (!this.textTopic) return;
-
-                    this.generatingText = true;
-
-                    try {
-                        const formData = new FormData();
-                        formData.append('action', 'generate_text');
-                        formData.append('topic', this.textTopic);
-                        formData.append('length', this.textLength);
-                        formData.append('grade', document.querySelector('[name="grade"]').value);
-
-                        const response = await fetch('<?= BASE_URL ?>/teacher/ajax/ai-generate-text.php', {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        const result = await response.json();
-
-                        if (result.success) {
-                            tinymce.get('quiz_text').setContent(result.text);
-                        } else {
-                            alert('خطأ: ' + result.error);
-                        }
-                    } catch (error) {
-                        alert('حدث خطأ في توليد النص');
+                handleSubmit(e) {
+                    if (!this.isLoading) {
+                        this.isLoading = true;
+                        // Form will submit normally
                     }
-
-                    this.generatingText = false;
                 }
-            }
-        }
+            }));
+        });
     </script>
 </body>
 

@@ -2,11 +2,15 @@
 // /teacher/quizzes/index.php
 require_once '../../config/database.php';
 require_once '../../includes/functions.php';
-
+// Define BASE_URL if not defined
+if (!defined('BASE_URL')) {
+    define('BASE_URL', '/online');
+}
 // Check if user is logged in and is a teacher or admin
 if (!isLoggedIn() || (!hasRole('teacher') && !hasRole('admin'))) {
     redirect('/auth/login.php');
 }
+
 
 $teacher_id = $_SESSION['user_id'];
 
